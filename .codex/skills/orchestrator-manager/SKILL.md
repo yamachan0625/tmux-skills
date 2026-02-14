@@ -34,6 +34,7 @@ cp .codex/orchestrator/config.toml.example .codex/orchestrator/config.toml
 ```
 
 2. `mode` と `worker_panes`、`github.repo`（github利用時）を設定する
+3. GitHub Project に紐付けたい場合は `[github].project_url` を設定する
 
 ## 実行
 
@@ -49,6 +50,17 @@ python3 .codex/skills/orchestrator-manager/scripts/github_dag_pipeline.py \
   --config .codex/orchestrator/config.toml \
   --root-issue 123
 ```
+
+## DAG 作成のみ（Issue 作成で停止）
+
+```bash
+python3 .codex/skills/orchestrator-manager/scripts/github_dag_pipeline.py \
+  --config .codex/orchestrator/config.toml \
+  --root-issue 123 \
+  --create-only
+```
+
+`github_dag_pipeline.py` は作成した DAG ノード Issue を root issue の sub-issue として紐付ける。`[github].project_url` を設定した場合は root/node issue を Project にも追加する。
 
 ## 実装ポリシー
 

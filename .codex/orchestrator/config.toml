@@ -1,7 +1,7 @@
 [core]
 mode = "github"
-manager_pane = "%3"
-worker_panes = ["%1"]
+manager_pane = "%0"
+worker_panes = ["%1", "%2", "%3"]
 poll_interval_sec = 2
 max_attempts = 2
 retry_backoff_sec = [10, 30]
@@ -15,6 +15,7 @@ output_language = "ja"
 [codex.manager]
 ask_for_approval = "never"
 sandbox = "danger-full-access"
+model = "gpt-5.3-codex"
 profile = ""
 
 [codex.worker]
@@ -31,7 +32,8 @@ done_dir = ".agent/done"
 failed_dir = ".agent/failed"
 
 [github]
-repo = "Omluc/tmux-orchestration-skills"
+repo = "yamachan0625/tmux-skills"
+project_url = "https://github.com/users/yamachan0625/projects/2"
 workflow = "pr-loop"
 queue_label = "agent:queued"
 running_label = "agent:running"

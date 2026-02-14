@@ -32,6 +32,7 @@ failed_dir = ".agent/failed"
 
 [github]
 repo = "owner/repo"
+project_url = "" # optional: https://github.com/users/<login>/projects/<number> or /orgs/<org>/projects/<number>
 workflow = "issue-only" # issue-only | pr-loop
 queue_label = "agent:queued"
 running_label = "agent:running"

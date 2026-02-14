@@ -65,11 +65,15 @@ class DAGPipeline:
         self.plan_file = Path(args.plan_file) if args.plan_file else None
         self.max_rounds = args.max_rounds
         self.dispatch_limit = args.dispatch_limit
+        self.create_only = args.create_only
 
         github = section(self.cfg, "github")
         self.github_repo = as_str(github.get("repo"), "")
         if not self.github_repo:
             raise OrchestratorError("[github].repo is required")
+        if "/" not in self.github_repo:
+            raise OrchestratorError("[github].repo must be in owner/name format")
+        self.repo_owner, self.repo_name = self.github_repo.split("/", 1)
 
         self.github_queue_label = as_str(github.get("queue_label"), "agent:queued")
         self.github_running_label = as_str(github.get("running_label"), "agent:running")
@@ -81,6 +85,26 @@ class DAGPipeline:
         self.github_dag_label = as_str(github.get("dag_label"), "agent:dag")
         self.github_dag_blocked_label = as_str(github.get("dag_blocked_label"), "agent:blocked")
         self.github_root_label = as_str(github.get("root_label"), "agent:root")
+        self.github_project_url = as_str(github.get("project_url"), "").strip()
+        self.issue_id_cache: dict[str, int] = {}
+        self.issue_node_id_cache: dict[str, str] = {}
+        self.project_id = ""
+        self.project_owner_kind = ""
+        self.project_owner = ""
+        self.project_number = 0
+        if self.github_project_url:
+            m = re.match(
+                r"^https://github\.com/(users|orgs)/([A-Za-z0-9-]+)/projects/(\d+)(?:[/?#].*)?$",
+                self.github_project_url,
+            )
+            if not m:
+                raise OrchestratorError(
+                    "[github].project_url must look like https://github.com/users/<login>/projects/<number> "
+                    "or https://github.com/orgs/<org>/projects/<number>"
+                )
+            self.project_owner_kind = m.group(1)
+            self.project_owner = m.group(2)
+            self.project_number = int(m.group(3))
 
         codex_manager = section(self.cfg, "codex.manager")
         self.approval = as_str(codex_manager.get("ask_for_approval"), "never")
@@ -117,6 +141,193 @@ class DAGPipeline:
     def gh_ok(self, args: list[str]) -> bool:
         cp = run_cmd(["gh", *args], check=False, capture_output=True)
         return cp.returncode == 0
+
+    def gh_graphql(self, query: str, variables: dict[str, str | int]) -> tuple[dict[str, Any], list[str]]:
+        cmd = ["gh", "api", "graphql", "-F", f"query={query}"]
+        for key, value in variables.items():
+            cmd.extend(["-F", f"{key}={value}"])
+        cp = run_cmd(cmd, check=False, capture_output=True)
+        if cp.returncode != 0:
+            detail = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()
+            raise OrchestratorError(f"gh api graphql failed: {detail}")
+        try:
+            payload = json.loads(cp.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise OrchestratorError("gh api graphql returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise OrchestratorError("gh api graphql returned unexpected payload")
+        errors_raw = payload.get("errors", [])
+        errors: list[str] = []
+        if isinstance(errors_raw, list):
+            for item in errors_raw:
+                if isinstance(item, dict):
+                    msg = as_str(item.get("message"), "").strip()
+                    if msg:
+                        errors.append(msg)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        return data, errors
+
+    def project_node_id(self) -> str:
+        if not self.github_project_url:
+            return ""
+        if self.project_id:
+            return self.project_id
+        if self.project_owner_kind == "users":
+            query = (
+                "query($login:String!,$number:Int!){"
+                "user(login:$login){projectV2(number:$number){id}}"
+                "}"
+            )
+            data, errors = self.gh_graphql(
+                query,
+                {"login": self.project_owner, "number": self.project_number},
+            )
+            if errors:
+                raise OrchestratorError(f"failed to resolve project id: {' | '.join(errors)}")
+            user = data.get("user")
+            if not isinstance(user, dict):
+                raise OrchestratorError("failed to resolve project id: user not found")
+            project = user.get("projectV2")
+            if not isinstance(project, dict):
+                raise OrchestratorError("failed to resolve project id: project not found")
+            project_id = as_str(project.get("id"), "")
+            if not project_id:
+                raise OrchestratorError("failed to resolve project id: empty project id")
+            self.project_id = project_id
+            return self.project_id
+
+        query = (
+            "query($login:String!,$number:Int!){"
+            "organization(login:$login){projectV2(number:$number){id}}"
+            "}"
+        )
+        data, errors = self.gh_graphql(
+            query,
+            {"login": self.project_owner, "number": self.project_number},
+        )
+        if errors:
+            raise OrchestratorError(f"failed to resolve project id: {' | '.join(errors)}")
+        org = data.get("organization")
+        if not isinstance(org, dict):
+            raise OrchestratorError("failed to resolve project id: organization not found")
+        project = org.get("projectV2")
+        if not isinstance(project, dict):
+            raise OrchestratorError("failed to resolve project id: project not found")
+        project_id = as_str(project.get("id"), "")
+        if not project_id:
+            raise OrchestratorError("failed to resolve project id: empty project id")
+        self.project_id = project_id
+        return self.project_id
+
+    def issue_node_id(self, issue: str) -> str:
+        cached = self.issue_node_id_cache.get(issue)
+        if cached:
+            return cached
+        try:
+            number = int(issue)
+        except ValueError as exc:
+            raise OrchestratorError(f"invalid issue number: {issue}") from exc
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            "repository(owner:$owner,name:$name){issue(number:$number){id}}"
+            "}"
+        )
+        data, errors = self.gh_graphql(
+            query,
+            {"owner": self.repo_owner, "name": self.repo_name, "number": number},
+        )
+        if errors:
+            raise OrchestratorError(f"failed to resolve issue node id #{issue}: {' | '.join(errors)}")
+        repo = data.get("repository")
+        if not isinstance(repo, dict):
+            raise OrchestratorError(f"failed to resolve issue node id #{issue}: repository not found")
+        issue_obj = repo.get("issue")
+        if not isinstance(issue_obj, dict):
+            raise OrchestratorError(f"failed to resolve issue node id #{issue}: issue not found")
+        node_id = as_str(issue_obj.get("id"), "").strip()
+        if not node_id:
+            raise OrchestratorError(f"failed to resolve issue node id #{issue}: empty id")
+        self.issue_node_id_cache[issue] = node_id
+        return node_id
+
+    def add_issue_to_project(self, issue: str) -> None:
+        project_id = self.project_node_id()
+        if not project_id:
+            return
+        issue_id = self.issue_node_id(issue)
+        mutation = (
+            "mutation($projectId:ID!,$contentId:ID!){"
+            "addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){item{id}}"
+            "}"
+        )
+        _, errors = self.gh_graphql(
+            mutation,
+            {"projectId": project_id, "contentId": issue_id},
+        )
+        if errors:
+            merged = " | ".join(errors)
+            lower = merged.lower()
+            if "already exists" in lower or "already in project" in lower:
+                self.plog(f"project item already exists issue=#{issue} project={self.github_project_url}")
+                return
+            raise OrchestratorError(
+                f"failed to add issue #{issue} to project {self.github_project_url}: {merged}\n"
+                "hint: ensure gh auth includes project scope (gh auth refresh -s project)"
+            )
+        self.plog(f"added issue #{issue} to project {self.github_project_url}")
+
+    def issue_rest_id(self, issue: str) -> int:
+        cached = self.issue_id_cache.get(issue)
+        if cached is not None:
+            return cached
+
+        last_out = ""
+        for attempt in range(3):
+            out = self.gh_text(
+                ["api", f"repos/{self.github_repo}/issues/{issue}", "--jq", ".id"],
+                check=False,
+                default="",
+            ).strip()
+            if out:
+                try:
+                    issue_id = int(out)
+                except ValueError as exc:
+                    raise OrchestratorError(f"invalid REST issue id for #{issue}: {out}") from exc
+                self.issue_id_cache[issue] = issue_id
+                return issue_id
+            last_out = out
+            time.sleep(1 + attempt)
+
+        raise OrchestratorError(f"failed to read REST issue id for #{issue}: {last_out}")
+
+    def link_sub_issue(self, parent_issue: str, child_issue: str) -> None:
+        child_id = self.issue_rest_id(child_issue)
+        detail = ""
+        for attempt in range(3):
+            cp = run_cmd(
+                [
+                    "gh",
+                    "api",
+                    "-X",
+                    "POST",
+                    f"repos/{self.github_repo}/issues/{parent_issue}/sub_issues",
+                    "-F",
+                    f"sub_issue_id={child_id}",
+                ],
+                check=False,
+                capture_output=True,
+            )
+            if cp.returncode == 0:
+                self.plog(f"linked sub-issue parent=#{parent_issue} child=#{child_issue}")
+                return
+            detail = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()
+            time.sleep(1 + attempt)
+
+        raise OrchestratorError(
+            f"failed to link sub-issue parent=#{parent_issue} child=#{child_issue}: {detail}"
+        )
 
     def create_labels_if_needed(self) -> None:
         labels = [
@@ -372,6 +583,8 @@ class DAGPipeline:
                         f"failed to parse issue number for node {node.node_id}: {created_text.strip()}"
                     )
                 issue_number = m.group(1)
+                self.link_sub_issue(str(self.root_issue), issue_number)
+                self.add_issue_to_project(issue_number)
                 mapping[node.node_id] = issue_number
                 f.write(f"{node.node_id}\t{issue_number}\t{depends_csv}\n")
                 self.plog(f"created node issue node={node.node_id} issue={issue_number} deps={depends_csv}")
@@ -470,6 +683,7 @@ class DAGPipeline:
             ["issue", "view", "-R", self.github_repo, str(self.root_issue), "--json", "url", "--jq", ".url"]
         )
         _ = root_title  # kept for future extensions
+        self.add_issue_to_project(str(self.root_issue))
 
         nodes = self.load_plan_nodes()
         mapping = self.create_node_issues(nodes, root_url)
@@ -490,6 +704,10 @@ class DAGPipeline:
             lines.append(f"- node `{node_id}`: #{issue} (depends_on: {depends_csv or 'none'})")
         root_comment_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.gh_ok(["issue", "comment", "-R", self.github_repo, str(self.root_issue), "--body-file", str(root_comment_file)])
+
+        if self.create_only:
+            self.plog("create-only mode: DAG issues created without dispatch execution")
+            return 0
 
         prev_done = -1
         stagnant_rounds = 0
@@ -557,6 +775,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--run-id", default=None, help="fixed run id (default: dag-<timestamp>)")
     parser.add_argument("--plan-file", default=None, help="path to prebuilt plan JSON")
+    parser.add_argument(
+        "--create-only",
+        action="store_true",
+        help="create DAG node issues and exit without running manager dispatch",
+    )
     parser.add_argument("--max-rounds", type=int, default=30, help="maximum manager rounds")
     parser.add_argument("--dispatch-limit", type=int, default=50, help="limit passed to manager dispatch")
     return parser.parse_args(argv)

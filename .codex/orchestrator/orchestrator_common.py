@@ -17,7 +17,15 @@ class OrchestratorError(RuntimeError):
 
 
 def load_toml(path: Path) -> dict[str, Any]:
-    import tomllib
+    try:
+        import tomllib  # type: ignore[attr-defined]
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError as exc:
+            raise OrchestratorError(
+                "TOML parser not found. Use Python 3.11+ or install 'tomli'."
+            ) from exc
 
     with path.open("rb") as f:
         data = tomllib.load(f)
