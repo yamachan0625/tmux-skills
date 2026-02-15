@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parent
+ASSETS_DIR = SKILL_DIR / "assets"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 COMMON_DIR = REPO_ROOT / ".codex/orchestrator"
 if str(COMMON_DIR) not in sys.path:
@@ -125,6 +127,7 @@ class DAGPipeline:
         self.plan_raw_file = self.run_dir / "plan.raw.txt"
         self.plan_json_file = self.run_dir / "plan.json"
         self.node_map_file = self.run_dir / "node_issues.tsv"
+        self.node_issue_body_template = self.load_asset_text("dag-node-issue-body.template.md")
 
         self.manager_script = SCRIPT_DIR / "manager_dispatch.py"
         if not self.manager_script.exists():
@@ -141,6 +144,49 @@ class DAGPipeline:
     def gh_ok(self, args: list[str]) -> bool:
         cp = run_cmd(["gh", *args], check=False, capture_output=True)
         return cp.returncode == 0
+
+    def load_asset_text(self, name: str) -> str:
+        path = ASSETS_DIR / name
+        if not path.exists():
+            raise OrchestratorError(f"asset template not found: {path}")
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    def format_acceptance_section(self, items: list[str]) -> str:
+        if not items:
+            return ""
+        lines = ["", "## Acceptance Criteria"]
+        for item in items:
+            criterion = item.strip()
+            if criterion.startswith("- [ ] "):
+                lines.append(criterion)
+            elif criterion.startswith("[ ] "):
+                lines.append(f"- {criterion}")
+            else:
+                lines.append(f"- [ ] {criterion}")
+        return "\n".join(lines)
+
+    def render_node_issue_body(
+        self,
+        *,
+        node: DAGNode,
+        root_url: str,
+        depends_csv: str,
+    ) -> str:
+        replacements = {
+            "{{DAG_RUN_ID}}": self.run_id,
+            "{{ROOT_ISSUE}}": str(self.root_issue),
+            "{{DAG_NODE_ID}}": node.node_id,
+            "{{DEPENDS_ON}}": depends_csv,
+            "{{ROOT_URL}}": root_url,
+            "{{TASK_DESCRIPTION}}": node.description,
+            "{{ACCEPTANCE_SECTION}}": self.format_acceptance_section(node.acceptance_criteria),
+        }
+        body = self.node_issue_body_template
+        for key, value in replacements.items():
+            body = body.replace(key, value)
+        if "{{" in body:
+            raise OrchestratorError("unresolved placeholder in DAG node issue template")
+        return body.rstrip() + "\n"
 
     def gh_graphql(self, query: str, variables: dict[str, str | int]) -> tuple[dict[str, Any], list[str]]:
         cmd = ["gh", "api", "graphql", "-F", f"query={query}"]
@@ -528,27 +574,12 @@ class DAGPipeline:
             for node in nodes:
                 depends_csv = ",".join(node.depends_on)
                 issue_body_file = self.run_dir / f"issue-body-{safe_key(node.node_id)}.md"
-                lines = [
-                    "<!-- orchestrator:dag-node:v1 -->",
-                    f"dag_run_id: {self.run_id}",
-                    f"root_issue: {self.root_issue}",
-                    f"dag_node_id: {node.node_id}",
-                    f"depends_on: {depends_csv}",
-                    "",
-                    "## Root Issue",
-                    f"- #{self.root_issue}",
-                    f"- {root_url}",
-                    "",
-                    "## Task Description",
-                    node.description,
-                    "",
-                ]
-                if node.acceptance_criteria:
-                    lines.append("## Acceptance Criteria")
-                    for item in node.acceptance_criteria:
-                        lines.append(f"- {item}")
-                    lines.append("")
-                issue_body_file.write_text("\n".join(lines), encoding="utf-8")
+                issue_body_text = self.render_node_issue_body(
+                    node=node,
+                    root_url=root_url,
+                    depends_csv=depends_csv,
+                )
+                issue_body_file.write_text(issue_body_text, encoding="utf-8")
 
                 cmd = [
                     "gh",
