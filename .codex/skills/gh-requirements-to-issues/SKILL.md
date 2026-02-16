@@ -23,8 +23,10 @@ Always create issues in Japanese and execute `gh issue create` unless duplicate 
 5. Skip clarifying questions only when the user explicitly requests non-interactive execution.
 6. Decompose requirements into parent/child issue graph with rules in `Task Decomposition Rules`.
 7. Build a plan file that follows `references/plan-schema.md`.
-8. Run `python3 scripts/create_issue_graph.py --plan <plan-file>`.
-9. If duplicate candidates are reported, stop and ask the user how to proceed.
+8. For any requirement that cannot be decided from input, add explicit user questions into issue-local `questions`.
+9. Ensure acceptance criteria and ToDo are issue-specific. Never reuse generic templates across multiple issues.
+10. Run `python3 scripts/create_issue_graph.py --plan <plan-file>`.
+11. If duplicate candidates are reported, stop and ask the user how to proceed.
 
 ## Task Decomposition Rules
 
@@ -56,17 +58,31 @@ Apply these rules to every issue body:
   - `## 目的`
   - `## スコープ`
   - `## 受け入れ条件 (Gherkin)`
-  - `## 実装タスク`
+  - `## ToDo`
+  - `## 要確認事項（ユーザー確認）` when requirement details are undecidable
 - Optional section:
   - `## Out of scope`
 - Make acceptance criteria concrete and measurable.
 - Write acceptance criteria in Gherkin style (`Given` / `When` / `Then`).
-- Ensure checklist task lines with `- [ ]`.
+- Ensure ToDo checklist lines with `- [ ]`.
+- Write issue-specific acceptance criteria. Do not use generic placeholders like "成果物が作成される".
+- Write issue-specific ToDo with explicit artifacts and completion signals.
+- Include target location in ToDo when possible (file path, table name, endpoint name, dashboard name).
+- Do not invent missing business rules. Put them under `要確認事項（ユーザー確認）`.
 
 Scenario minimums:
 - Spike/investigation child issue: at least 1 scenario.
 - Normal implementation child issue: at least 2 scenarios (normal + edge/failure).
 - Child issue that includes DB migration, external API integration, or authorization/permission: at least 3 scenarios.
+
+## Specificity Rules
+
+Use this checklist before creation:
+
+- Every scenario has issue-specific nouns (API/table/metric/rule) and a verifiable result.
+- Every ToDo names concrete deliverables and where they will exist.
+- Every undecidable parameter appears under `要確認事項（ユーザー確認）` as a question.
+- Any two issues with identical acceptance criteria or identical ToDo are invalid and must be rewritten.
 
 ## Sub-Issues And Dependencies
 

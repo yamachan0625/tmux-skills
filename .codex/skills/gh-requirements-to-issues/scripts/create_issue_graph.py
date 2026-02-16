@@ -39,6 +39,15 @@ STRICT_SCENARIO_KEYWORDS = (
     "auth",
 )
 SPIKE_KEYWORDS = ("spike", "調査", "検証", "poc", "research", "investigation")
+GENERIC_SCENARIO_NAMES = {
+    "成果物が定義どおり作成される",
+    "前提不足時の扱いが明確である",
+    "完了判定を満たす",
+}
+GENERIC_TODO_PHRASES = (
+    "実装または仕様化を実施する",
+    "受け入れ条件を満たす証跡を添えてprがマージされる",
+)
 
 CANONICAL_LABEL_ALIASES: dict[str, list[str]] = {
     "bug": ["bug", "type:bug", "kind/bug"],
@@ -160,6 +169,7 @@ def ensure_scenarios(value: Any, field: str) -> list[dict[str, str]]:
 
 
 def normalize_issue(raw: dict[str, Any], context: str, default_ref: str) -> dict[str, Any]:
+    raw_todos = raw.get("todos", raw.get("tasks"))
     issue: dict[str, Any] = {
         "ref": ensure_non_empty_str(raw.get("id", default_ref), f"{context}.id"),
         "title": ensure_non_empty_str(raw.get("title"), f"{context}.title"),
@@ -169,9 +179,10 @@ def normalize_issue(raw: dict[str, Any], context: str, default_ref: str) -> dict
         "acceptance_criteria": ensure_scenarios(
             raw.get("acceptance_criteria"), f"{context}.acceptance_criteria"
         ),
-        "tasks": ensure_string_list(raw.get("tasks"), f"{context}.tasks"),
+        "todos": ensure_string_list(raw_todos, f"{context}.todos"),
         "labels": [],
         "depends_on": [],
+        "questions": [],
         "out_of_scope": [],
     }
     raw_labels = raw.get("labels", [])
@@ -180,6 +191,9 @@ def normalize_issue(raw: dict[str, Any], context: str, default_ref: str) -> dict
     raw_depends_on = raw.get("depends_on", [])
     if raw_depends_on:
         issue["depends_on"] = ensure_string_list(raw_depends_on, f"{context}.depends_on")
+    raw_questions = raw.get("questions", [])
+    if raw_questions:
+        issue["questions"] = ensure_string_list(raw_questions, f"{context}.questions")
     raw_out = raw.get("out_of_scope", [])
     if raw_out:
         issue["out_of_scope"] = ensure_string_list(raw_out, f"{context}.out_of_scope")
@@ -193,7 +207,7 @@ def is_spike_issue(issue: dict[str, Any]) -> bool:
             issue["background"],
             issue["purpose"],
             " ".join(issue["scope"]),
-            " ".join(issue["tasks"]),
+            " ".join(issue["todos"]),
             " ".join(issue["labels"]),
         ]
     ).lower()
@@ -207,11 +221,62 @@ def needs_strict_scenarios(issue: dict[str, Any]) -> bool:
             issue["background"],
             issue["purpose"],
             " ".join(issue["scope"]),
-            " ".join(issue["tasks"]),
+            " ".join(issue["todos"]),
             " ".join(issue["labels"]),
         ]
     ).lower()
     return any(keyword in text for keyword in STRICT_SCENARIO_KEYWORDS)
+
+
+def validate_issue_specific_content(issue: dict[str, Any], context: str) -> None:
+    for idx, scenario in enumerate(issue["acceptance_criteria"]):
+        if scenario["scenario"] in GENERIC_SCENARIO_NAMES:
+            raise ValueError(
+                f"{context}.acceptance_criteria[{idx}].scenario uses generic template text: "
+                f"'{scenario['scenario']}'."
+            )
+
+    for idx, todo in enumerate(issue["todos"]):
+        todo_lower = todo.lower()
+        for phrase in GENERIC_TODO_PHRASES:
+            if phrase in todo_lower:
+                raise ValueError(
+                    f"{context}.todos[{idx}] uses generic template phrase: '{todo}'."
+                )
+
+
+def validate_non_duplicate_content(parents: list[dict[str, Any]]) -> None:
+    criteria_map: dict[str, list[str]] = {}
+    todo_map: dict[str, list[str]] = {}
+
+    for p_idx, parent in enumerate(parents):
+        p_ctx = f"parents[{p_idx}]({parent['title']})"
+        criteria_key = json.dumps(parent["acceptance_criteria"], ensure_ascii=False, sort_keys=True)
+        todo_key = json.dumps(parent["todos"], ensure_ascii=False)
+        criteria_map.setdefault(criteria_key, []).append(p_ctx)
+        todo_map.setdefault(todo_key, []).append(p_ctx)
+
+        for c_idx, child in enumerate(parent["children"]):
+            c_ctx = f"{p_ctx}.children[{c_idx}]({child['title']})"
+            criteria_key = json.dumps(child["acceptance_criteria"], ensure_ascii=False, sort_keys=True)
+            todo_key = json.dumps(child["todos"], ensure_ascii=False)
+            criteria_map.setdefault(criteria_key, []).append(c_ctx)
+            todo_map.setdefault(todo_key, []).append(c_ctx)
+
+    duplicated_criteria = [refs for refs in criteria_map.values() if len(refs) > 1]
+    duplicated_todos = [refs for refs in todo_map.values() if len(refs) > 1]
+    if duplicated_criteria:
+        refs = " | ".join(", ".join(group) for group in duplicated_criteria)
+        raise ValueError(
+            "Identical acceptance_criteria found across multiple issues. "
+            f"Rewrite them per issue. Duplicates: {refs}"
+        )
+    if duplicated_todos:
+        refs = " | ".join(", ".join(group) for group in duplicated_todos)
+        raise ValueError(
+            "Identical todos found across multiple issues. "
+            f"Rewrite them per issue. Duplicates: {refs}"
+        )
 
 
 def validate_scenario_minimum(issue: dict[str, Any], context: str) -> None:

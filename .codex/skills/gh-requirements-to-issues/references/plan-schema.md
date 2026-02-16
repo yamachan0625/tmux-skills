@@ -35,9 +35,12 @@ python3 scripts/create_issue_graph.py --plan /tmp/issue-plan.json
           "then": "401が返りトークンは発行されない"
         }
       ],
-      "tasks": [
+      "todos": [
         "子Issueがすべて完了したことを確認する",
         "リリース判定を実施して親Issueをクローズする"
+      ],
+      "questions": [
+        "親Issueの完了判定コメントの定型文はありますか？"
       ],
       "out_of_scope": [
         "認証方式の全面刷新"
@@ -69,10 +72,13 @@ python3 scripts/create_issue_graph.py --plan /tmp/issue-plan.json
               "then": "401と標準エラーコードが返る"
             }
           ],
-          "tasks": [
+          "todos": [
             "失敗系のテストを先に作成する",
             "API処理を修正する",
             "テストを通す"
+          ],
+          "questions": [
+            "標準エラーコード一覧のソースはどれですか？"
           ],
           "depends_on": [
             "auth-schema"
@@ -107,10 +113,13 @@ python3 scripts/create_issue_graph.py --plan /tmp/issue-plan.json
               "then": "スキーマが元に戻る"
             }
           ],
-          "tasks": [
+          "todos": [
             "マイグレーションの失敗テストを先に追加する",
             "マイグレーションを実装する",
             "適用とロールバックを検証する"
+          ],
+          "questions": [
+            "ロールバックの許容停止時間は何分ですか？"
           ]
         }
       ]
@@ -125,8 +134,12 @@ python3 scripts/create_issue_graph.py --plan /tmp/issue-plan.json
 - `parents[*].children` must contain at most 10 items.
 - `id` is optional but recommended. Use stable IDs and refer to them from `depends_on`.
 - `depends_on` supports child `id` or exact child `title`.
+- `todos` is required. `tasks` is accepted for backward compatibility.
+- `questions` is optional but required when requirements are undecidable from input.
 - `labels` is optional. Script also infers labels automatically.
 - `out_of_scope` is optional.
+- Do not reuse identical `acceptance_criteria` or identical `todos` across different issues.
+- Avoid generic wording. Each issue should include concrete objects (API/table/metric/rule).
 
 ## Validation behavior
 
