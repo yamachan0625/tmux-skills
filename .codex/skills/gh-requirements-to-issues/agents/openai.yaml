@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requirements to GitHub Issues"
+  short_description: "Create parent/child issues with dependencies from requirements"
+  default_prompt: "Use $gh-requirements-to-issues to convert these requirements into Japanese parent/child issues and dependency links."
